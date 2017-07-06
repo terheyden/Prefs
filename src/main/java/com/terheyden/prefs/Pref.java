@@ -14,16 +14,22 @@ import java.util.prefs.Preferences;
 @Documented
 @Target(ElementType.FIELD)
 @Retention(RetentionPolicy.RUNTIME)
-public @interface UserPref {
+public @interface Pref {
 
     /**
-     * The user preference key to bind this field to.
+     * If set to true, this preference will be set system-wide instead of
+     * associated with the current user.
+     */
+    boolean isGlobal() default false;
+
+    /**
+     * The name to give this value in the preference store.
      * If not set, this defaults to the field name.
      */
-    String key() default "";
+    String name() default "";
 
     /**
-     * Pref vals can never be null, so what is the default?
+     * When this field has no value, what should we use as the default?
      * Must be a string, so for nums and bools do "3" and "true" etc.
      */
     String defaultVal() default "";

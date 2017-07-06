@@ -9,37 +9,37 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Example system / user preferences usage with my annotations.
+ * Example system / user Prefs usage.
  * See: {@link Prefs}
  */
 public class AppSettings {
 
     private static final Gson gson = new Gson();
 
-    @SysPref(key = "license", defaultVal = "UNLICENSED")
+    @Pref(isGlobal = true, name = "license", defaultVal = "UNLICENSED")
     public String sysLicense;
 
-    @UserPref
+    @Pref
     public String lastDir;
 
-    @UserPref
+    @Pref(isGlobal = true)
     public int timesRan;
 
-    @UserPref(key = "saveOnExit", defaultVal = "true")
+    @Pref(defaultVal = "true")
     public boolean saveOnExit;
 
     // Lists, maps, and sets of Strings are supported.
     // Use an explicit type, e.g. LinkedList or ArrayList, for best results.
     // Private fields are also supported.
 
-    @SysPref
+    @Pref
     private Set<String> cache = new HashSet<>();
 
     public Set<String> getCache() {
         return cache;
     }
 
-    @SysPref
+    @Pref
     public Map<String, String> map;
 
     ////////////////////////////////////////////////////////////////////////////////
@@ -47,7 +47,7 @@ public class AppSettings {
 
     private static final Type TYPE_SET_USER = new TypeToken<Set<User>>() { }.getType();
 
-    @UserPref
+    @Pref
     private String usersData;
     public Set<User> users;
 
@@ -56,12 +56,12 @@ public class AppSettings {
         // Convert objs to strings.
         usersData = gson.toJson(users);
 
-        Prefs.bindSave(this);
+        Prefs.save(this);
     }
 
     public void load() {
 
-        Prefs.bindLoad(this);
+        Prefs.load(this);
 
         users = gson.fromJson(usersData, TYPE_SET_USER);
     }

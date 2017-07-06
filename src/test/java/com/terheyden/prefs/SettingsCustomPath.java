@@ -9,17 +9,17 @@ import java.util.LinkedList;
 @PrefSettings(path = "/com/terheyden/javautils")
 public class SettingsCustomPath {
 
-    @UserPref
+    @Pref
     public ArrayList<String> alist = new ArrayList<>();
 
-    @SysPref
+    @Pref
     public LinkedList<String> llist = new LinkedList<>();
 
     public void save() {
-        Prefs.bindSave(this);
+        Prefs.save(this);
     }
 
     public void load() {
-        Prefs.bindLoad(this);
+        Prefs.load(this);
     }
 }

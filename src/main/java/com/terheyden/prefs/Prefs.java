@@ -31,7 +31,7 @@ public enum Prefs {
 
     // Note that Java Preferences are stored in the registry on Windows, and in ~/Library/* on Mac.
 
-    // Preference maps for the system and user spaces.
+    // Preference maps for the isGlobal and user spaces.
     // Key is the consumer's path, e.g., "/com/myname/myapp".
     private static final Map<String, Preferences> userPrefMap = new HashMap<>();
     private static final Map<String, Preferences> sysPrefMap = new HashMap<>();
@@ -48,23 +48,17 @@ public enum Prefs {
     private static Gson _gson;
 
     /**
-     * Used for iterating over all prefs...
-     */
-    private static final Class<?>[] classes = { UserPref.class, SysPref.class };
-
-
-    /**
      * Lazy lookup of the {@link Preferences} obj corresponding to the user / sys domain
      * and the specified user path. Creates if not found.
      *
-     * @param userPrefs 'user' space, or 'system' space?
+     * @param sysPrefs 'user' space, or 'isGlobal' space?
      */
-    private static Preferences getPrefs(boolean userPrefs, String prefPath) {
+    private static Preferences getPrefs(boolean sysPrefs, String prefPath) {
 
-        Map<String, Preferences> prefMap = userPrefs ? userPrefMap : sysPrefMap;
+        Map<String, Preferences> prefMap = sysPrefs ? sysPrefMap : userPrefMap;
 
         if (!prefMap.containsKey(prefPath)) {
-            Preferences prefs = userPrefs ? Preferences.userRoot().node(prefPath) : Preferences.systemRoot().node(prefPath);
+            Preferences prefs = sysPrefs ? Preferences.systemRoot().node(prefPath) : Preferences.userRoot().node(prefPath);
             prefMap.put(prefPath, prefs);
         }
 
@@ -172,7 +166,7 @@ public enum Prefs {
     }
 
     /**
-     * Delete all system and user preferences!
+     * Delete all isGlobal and user preferences!
      */
     public static void deleteAllPrefs() {
 
@@ -236,219 +230,156 @@ public enum Prefs {
         }
     }
 
-    /**
-     * Save the object's state into Java {@link Preferences}.
-     * Only saves fields that are annotated with {@link UserPref} or {@link SysPref}.
-     * See also: {@link PrefSettings}, {@link #bindLoad(Object)}.
-     * @param bindObj almost always 'this'
-     */
-    public static void bindSave(Object bindObj) {
+    private static void walkObjectPrefs(Object bindObj, PrefWalker prefWalker) {
 
         if (bindObj == null) {
-            throw new IllegalArgumentException("You can't bind save a null obj.");
+            throw new IllegalArgumentException("You can't save a null obj.");
         }
 
-        // Determine the prefPath from the object.
+        // Determine the prefPath from the object's package, and @PrefSettings.
         String prefPath = getPrefPath(bindObj);
-        Preferences[] prefs = { getPrefs(true, prefPath), getPrefs(false, prefPath) };
 
-        // In this loop, we process user prefs, then sys prefs:
+        // Look up all fields annotated with @Pref.
+        List<AnnotationResult<Field>> bindFields = AnnotationFinder.findAnnotatedFields(bindObj, Pref.class);
 
-        for (int i = 0; i < 2; i++) {
+        for (AnnotationResult<Field> bindField : bindFields) {
+            try {
 
-            Class<?> annClass = classes[i];
-            Preferences pref = prefs[i];
+                Field f = bindField.element;
+                Object obj = bindField.obj;
+                Class<?> type = f.getType();
+                Pref ann = (Pref) bindField.annotation;
+                String key = With.str(ann.name()).ifBlank(f.getName());
+                boolean useSys = ann.isGlobal();
+                Preferences pref = getPrefs(useSys, prefPath);
+                String defaultVal = ann.defaultVal();
 
-            List<AnnotationResult<Field>> bindFields = AnnotationFinder.findAnnotatedFields(bindObj, annClass);
+                // Force accessible:
+                boolean wasAccessible = f.isAccessible();
 
-            for (AnnotationResult<Field> bindField : bindFields) {
+                if (!wasAccessible) {
+                    f.setAccessible(true);
+                }
+
                 try {
 
-                    Field f = bindField.element;
-                    Object obj = bindField.obj;
-                    Class<?> type = f.getType();
-                    String key = getFieldKey(f, annClass, bindField.annotation);
+                    prefWalker.walkPref(pref, f, type, obj, key, defaultVal);
 
-                    // Force accessible:
-                    boolean wasAccessible = f.isAccessible();
-
+                } finally {
                     if (!wasAccessible) {
-                        f.setAccessible(true);
+                        f.setAccessible(false);
                     }
-
-                    // Deal with a null value:
-
-                    boolean isNull = f.get(obj) == null;
-
-                    if (isNull) {
-
-                        boolean hasOldVal = pref.get(key, null) != null;
-
-                        if (hasOldVal) {
-                            pref.remove(key);
-                        }
-
-                    } else {
-
-                        // Only try to save non-null values.
-
-                        try {
-                            if (type == String.class) {
-                                setStr(pref, key, (String) f.get(obj));
-                            } else if (type == Integer.class || type == Integer.TYPE) {
-                                setInt(pref, key, f.getInt(obj));
-                            } else if (type == Long.class || type == Long.TYPE) {
-                                setLong(pref, key, f.getLong(obj));
-                            } else if (type == Boolean.class || type == Boolean.TYPE) {
-                                setBool(pref, key, f.getBoolean(obj));
-                            } else if (type == LinkedList.class) {
-                                setLinkedList(pref, key, (LinkedList<String>) f.get(obj));
-                            } else if (type == ArrayList.class || type == List.class) {
-                                setArrayList(pref, key, (ArrayList<String>) f.get(obj));
-                            } else if (type == HashMap.class || type == Map.class) {
-                                setHashMap(pref, key, (HashMap<String, String>) f.get(obj));
-                            } else if (type == HashSet.class || type == Set.class) {
-                                setHashSet(pref, key, (HashSet<String>) f.get(obj));
-                            } else {
-                                throw new IllegalArgumentException("Unknown type: " + type.getName());
-                            }
-
-                        } finally {
-                            if (!wasAccessible) {
-                                f.setAccessible(false);
-                            }
-                        }
-                    }
-
-                } catch (Exception e) {
-                    e.printStackTrace();
                 }
+
+            } catch (Exception e) {
+                e.printStackTrace();
             }
 
-        } // end looping over user and sys.
+        } // end for each bound field found.
+    }
+
+    @FunctionalInterface
+    private interface PrefWalker {
+
+        void walkPref(
+            Preferences prefs,
+            Field annField,
+            Class<?> annFieldType,
+            Object annObj,
+            String prefKeyName,
+            String defaultVal
+        ) throws Exception;
+    }
+
+    /**
+     * Save the object's state into Java {@link Preferences}.
+     * Only saves fields that are annotated with {@link Pref} or {@link SysPref}.
+     * See also: {@link PrefSettings}, {@link #load(Object)}.
+     * @param bindObj almost always 'this'
+     */
+    public static void save(Object bindObj) {
+
+        walkObjectPrefs(bindObj, (prefs, annField, annFieldType, annObj, prefKeyName, defaultVal) -> {
+
+            // Deal with a null value:
+
+            boolean isNull = annField.get(annObj) == null;
+
+            if (isNull) {
+
+                boolean hasOldVal = prefs.get(prefKeyName, null) != null;
+
+                if (hasOldVal) {
+                    prefs.remove(prefKeyName);
+                }
+
+            } else {
+
+                // Only try to save non-null values.
+
+                if (annFieldType == String.class) {
+                    setStr(prefs, prefKeyName, (String) annField.get(annObj));
+                } else if (annFieldType == Integer.class || annFieldType == Integer.TYPE) {
+                    setInt(prefs, prefKeyName, annField.getInt(annObj));
+                } else if (annFieldType == Long.class || annFieldType == Long.TYPE) {
+                    setLong(prefs, prefKeyName, annField.getLong(annObj));
+                } else if (annFieldType == Boolean.class || annFieldType == Boolean.TYPE) {
+                    setBool(prefs, prefKeyName, annField.getBoolean(annObj));
+                } else if (annFieldType == LinkedList.class) {
+                    setLinkedList(prefs, prefKeyName, (LinkedList<String>) annField.get(annObj));
+                } else if (annFieldType == ArrayList.class || annFieldType == List.class) {
+                    setArrayList(prefs, prefKeyName, (ArrayList<String>) annField.get(annObj));
+                } else if (annFieldType == HashMap.class || annFieldType == Map.class) {
+                    setHashMap(prefs, prefKeyName, (HashMap<String, String>) annField.get(annObj));
+                } else if (annFieldType == HashSet.class || annFieldType == Set.class) {
+                    setHashSet(prefs, prefKeyName, (HashSet<String>) annField.get(annObj));
+                } else {
+                    throw new IllegalArgumentException("Unknown type: " + annFieldType.getName());
+                }
+
+            }
+
+        });
     }
 
     /**
      * Load the object's state from Java {@link Preferences}.
-     * Only loads fields that are annotated with {@link UserPref} or {@link SysPref}.
-     * See also: {@link PrefSettings}, {@link #bindSave(Object)}.
+     * Only loads fields that are annotated with {@link Pref} or {@link SysPref}.
+     * See also: {@link PrefSettings}, {@link #save(Object)}.
      * @param bindObj almost always 'this'
      */
-    public static void bindLoad(Object bindObj) {
+    public static void load(Object bindObj) {
 
-        if (bindObj == null) {
-            throw new IllegalArgumentException("You can't bind save a null obj.");
-        }
+        walkObjectPrefs(bindObj, (prefs, annField, annFieldType, annObj, prefKeyName, defaultVal) -> {
 
-        // Determine the prefPath from the object.
-        String prefPath = getPrefPath(bindObj);
-        Preferences[] prefs = { getPrefs(true, prefPath), getPrefs(false, prefPath) };
+            boolean isSaved = getStr(prefs, prefKeyName, null) != null;
 
-        // In this loop, we process user prefs, then sys prefs:
-
-        for (int i = 0; i < 2; i++) {
-
-            Class<?> annClass = classes[i];
-            Preferences pref = prefs[i];
-
-            List<AnnotationResult<Field>> bindFields = AnnotationFinder.findAnnotatedFields(bindObj, annClass);
-
-            for (AnnotationResult<Field> bindField : bindFields) {
-                try {
-
-                    Field f = bindField.element;
-                    Class<?> type = f.getType();
-                    Object obj = bindField.obj;
-                    String key = getFieldKey(f, annClass, bindField.annotation);
-                    String defVal = getFieldDefaultValue(f, annClass, bindField.annotation);
-
-                    // If they leave the bind key blank, we default to the field name.
-                    if (key.isEmpty()) {
-                        key = f.getName();
-                    }
-
-                    // Force accessible:
-                    boolean wasAccessible = f.isAccessible();
-
-                    if (!wasAccessible) {
-                        f.setAccessible(true);
-                    }
-
-                    boolean isSaved = getStr(pref, key, null) != null;
-
-                    // Don't mess with the field if there's no saved value.
-                    if (isSaved) {
-                        try {
-                            if (type == String.class) {
-                                f.set(obj, getStr(pref, key, defVal));
-                            } else if (type == Integer.class || type == Integer.TYPE) {
-                                f.setInt(obj, getInt(pref, key, defVal.isEmpty() ? 0 : Integer.parseInt(defVal)));
-                            } else if (type == Long.class || type == Long.TYPE) {
-                                f.setLong(obj, getLong(pref, key, defVal.isEmpty() ? 0 : Long.parseLong(defVal)));
-                            } else if (type == Boolean.class || type == Boolean.TYPE) {
-                                f.setBoolean(obj, getBool(pref, key, defVal.isEmpty() ? false : Boolean.parseBoolean(defVal)));
-                            } else if (type == LinkedList.class) {
-                                f.set(obj, getLinkedList(pref, key, null));
-                            } else if (type == ArrayList.class || type == List.class) {
-                                f.set(obj, getArrayList(pref, key, null));
-                            } else if (type == HashMap.class || type == Map.class) {
-                                f.set(obj, getHashMap(pref, key, null));
-                            } else if (type == HashSet.class || type == Set.class) {
-                                f.set(obj, getHashSet(pref, key, null));
-                            } else {
-                                throw new IllegalArgumentException("Not sure how to unbind: " + type);
-                            }
-
-                        } finally {
-                            if (!wasAccessible) {
-                                f.setAccessible(false);
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+            // Don't mess with this field's existing setup if there's no saved value.
+            if (!isSaved) {
+                return;
             }
 
-        } // end for user, then sys prefs
-
-    }
-
-    /**
-     * Get the @UserPref or @SysPref key value from an annotated class field.
-     */
-    private static String getFieldKey(Field annField, Class<?> annClass, Annotation ann) {
-
-        // Get the key the user set inside the annotation.
-
-        String key = null;
-
-        if (annClass == UserPref.class) {
-            key = ((UserPref) ann).key();
-        } else if (annClass == SysPref.class) {
-            key = ((SysPref) ann).key();
-        }
-
-        // The default is "". If they didn't set the key name, default to the field name.
-        if (key == null || key.isEmpty()) {
-            key = annField.getName();
-        }
-
-        return key;
-    }
-
-    /**
-     * Get the @UserPref or @SysPref default value from an annotated class field.
-     */
-    private static String getFieldDefaultValue(Field field, Class<?> annClass, Annotation ann) {
-
-        if (annClass == UserPref.class) {
-            return ((UserPref) ann).defaultVal();
-        } else if (annClass == SysPref.class) {
-            return ((SysPref) ann).defaultVal();
-        }
-
-        throw new IllegalArgumentException("Unknown type: " + annClass.getName());
+            if (annFieldType == String.class) {
+                annField.set(annObj, getStr(prefs, prefKeyName, defaultVal));
+            } else if (annFieldType == Integer.class || annFieldType == Integer.TYPE) {
+                annField.setInt(annObj, getInt(prefs, prefKeyName, defaultVal.isEmpty() ? 0 : Integer.parseInt(defaultVal)));
+            } else if (annFieldType == Long.class || annFieldType == Long.TYPE) {
+                annField.setLong(annObj, getLong(prefs, prefKeyName, defaultVal.isEmpty() ? 0 : Long.parseLong(defaultVal)));
+            } else if (annFieldType == Boolean.class || annFieldType == Boolean.TYPE) {
+                boolean defaultBool = defaultVal.isEmpty() ? false : Boolean.parseBoolean(defaultVal);
+                annField.setBoolean(annObj, getBool(prefs, prefKeyName, defaultBool));
+            } else if (annFieldType == LinkedList.class) {
+                annField.set(annObj, getLinkedList(prefs, prefKeyName, null));
+            } else if (annFieldType == ArrayList.class || annFieldType == List.class) {
+                annField.set(annObj, getArrayList(prefs, prefKeyName, null));
+            } else if (annFieldType == HashMap.class || annFieldType == Map.class) {
+                annField.set(annObj, getHashMap(prefs, prefKeyName, null));
+            } else if (annFieldType == HashSet.class || annFieldType == Set.class) {
+                annField.set(annObj, getHashSet(prefs, prefKeyName, null));
+            } else {
+                throw new IllegalArgumentException("Not sure how to unbind: " + annFieldType);
+            }
+        });
     }
 
     /**
